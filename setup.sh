@@ -148,6 +148,7 @@ cd server
 rm -rf node_modules bun.lockb package-lock.json
 bun install
 bun add -d @esbuild/darwin-x64
+bun add -d @biomejs/cli-darwin-x64
 bun add @xyne/vespa-ts
 cd ..
 
