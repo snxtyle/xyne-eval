@@ -18,25 +18,14 @@ print_error() {
 }
 
 setup_test_script() {
-    print_status "Setting up test script..."
+    print_status "Setting up eval environment..."
     
     local eval_dir="$EVAL_AUTOMATION_DIR"
-    local server_dir="$SCRIPT_DIR/server"
     
     mkdir -p "$eval_dir/results"
+    mkdir -p "$eval_dir/scoring_outputs"
     
-    if [ ! -f "$server_dir/test_api.ts" ]; then
-        print_status "Copying test script with fixed imports..."
-        cp "$eval_dir/test_api_v6.ts" "$server_dir/test_api.ts"
-        
-        sed -i '' 's|from "../../../db/client"|from "./db/client"|g' "$server_dir/test_api.ts"
-        sed -i '' 's|from "../../../db/user"|from "./db/user"|g' "$server_dir/test_api.ts"
-        sed -i '' 's|from "../../../config"|from "./config"|g' "$server_dir/test_api.ts"
-        
-        sed -i '' 's|xyne-evals/qa_pipelines/generation_through_vespa/output/qa_output_hard.json|'"$eval_dir"'/qa_output_hard.json|g' "$server_dir/test_api.ts"
-    fi
-    
-    print_status "Test script ready"
+    print_status "Eval environment ready"
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -86,9 +75,9 @@ run_test_api() {
     echo "  Batch Size: $BATCH_SIZE"
     echo ""
     
-    cd "$SCRIPT_DIR/server"
+    cd "$EVAL_AUTOMATION_DIR"
     
-    RESULTS_DIR="$EVAL_AUTOMATION_DIR/results" bun run test_api.ts "$START_INDEX" "$COUNT" "$BATCH_SIZE"
+    RESULTS_DIR="$EVAL_AUTOMATION_DIR/results" bun run test_api_v6.ts "$START_INDEX" "$COUNT" "$BATCH_SIZE"
     
     if [ $? -ne 0 ]; then
         print_error "test_api_v6.ts failed!"
@@ -102,9 +91,9 @@ run_scorer() {
     print_status "Running scorer.ts..."
     echo ""
     
-    cd "$SCRIPT_DIR/server"
+    cd "$EVAL_AUTOMATION_DIR"
     
-    RESULTS_DIR="$EVAL_AUTOMATION_DIR/results" bun run ../eval-automation/scorer.ts
+    RESULTS_DIR="$EVAL_AUTOMATION_DIR/results" bun run scorer.ts
     
     if [ $? -ne 0 ]; then
         print_error "scorer.ts failed!"

@@ -212,9 +212,9 @@ server/eval-results
 eval-automation/results/
 eval-automation/scoring_outputs/
 eval-automation/test_api.ts
-eval-automation/docs/
 eval-automation/qa_output_hard.json
 eval-automation/.docs_ingested
+eval-automation/docs/*
 server/.venv/*
 
 deployment/grafana/grafana-storage
@@ -226,4 +226,15 @@ data/app-assets/
 
 # docker-compose app file
 deployment/portable/docker-compose.app.yml
+
+# lock files
+bun.lock
+bun.lockb
+package-lock.json
+
+# eval-automation dependencies
+eval-automation/bun.lock
+eval-automation/node_modules/
+eval-automation/package.json
+eval-automation/package-lock.json
 deployment/portable/docker-compose.sync.yml
