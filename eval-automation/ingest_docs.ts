@@ -43,26 +43,14 @@ const generateTokens = async (
 }
 
 const generateAuthenticationCookies = async () => {
-  const accessToken = await generateTokens(
-    TEST_USER_EMAIL,
-    "admin",
-    "ws_default",
-  )
-  const refreshToken = await generateTokens(
-    TEST_USER_EMAIL,
-    "admin",
-    "ws_default",
-    true,
-  )
+  const accessToken = await generateTokens(TEST_USER_EMAIL, "admin", "ws_default")
+  const refreshToken = await generateTokens(TEST_USER_EMAIL, "admin", "ws_default", true)
   return { accessToken, refreshToken }
 }
 
-const uploadFile = async (
-  filePath: string,
-  cookies: { accessToken: string; refreshToken: string },
-) => {
+const uploadFile = async (filePath: string, cookies: { accessToken: string; refreshToken: string }) => {
   const fileName = filePath.split("/").pop() || "unknown"
-
+  
   const formData = new FormData()
   const fileBuffer = readFileSync(filePath)
   const blob = new Blob([fileBuffer])
@@ -72,16 +60,13 @@ const uploadFile = async (
   formData.append("duplicateStrategy", "rename")
 
   try {
-    const response = await fetch(
-      `${API_BASE}/api/v1/cl/${COLLECTION_ID}/items/upload`,
-      {
-        method: "POST",
-        headers: {
-          Cookie: `${AccessTokenCookieName}=${cookies.accessToken}; ${RefreshTokenCookieName}=${cookies.refreshToken}`,
-        },
-        body: formData,
+    const response = await fetch(`${API_BASE}/api/v1/cl/${COLLECTION_ID}/items/upload`, {
+      method: "POST",
+      headers: {
+        "Cookie": `${AccessTokenCookieName}=${cookies.accessToken}; ${RefreshTokenCookieName}=${cookies.refreshToken}`,
       },
-    )
+      body: formData,
+    })
 
     if (!response.ok) {
       const error = await response.text()
@@ -96,18 +81,18 @@ const uploadFile = async (
 
 const main = async () => {
   const docsDir = process.env.DOCS_DIR || "./docs"
-
+  
   if (!existsSync(docsDir)) {
     console.error(`Docs directory not found: ${docsDir}`)
     process.exit(1)
   }
 
   const fileList: string[] = []
-
-  const { readdirSync } = await import("fs")
+  
+  const { readdirSync } = await import('fs')
   for (const entry of readdirSync(docsDir)) {
     const fullPath = join(docsDir, entry)
-    const stat = await import("fs").then((fs) => fs.statSync(fullPath))
+    const stat = await import('fs').then(fs => fs.statSync(fullPath))
     if (stat.isFile() && !entry.startsWith(".")) {
       fileList.push(fullPath)
     }
@@ -119,20 +104,18 @@ const main = async () => {
   }
 
   console.log(`Found ${fileList.length} files to ingest`)
-
+  
   const cookies = await generateAuthenticationCookies()
-
+  
   let successCount = 0
   let failCount = 0
 
   for (let i = 0; i < fileList.length; i++) {
     const filePath = fileList[i]
     const fileName = filePath.split("/").pop()
-
-    process.stdout.write(
-      `[${i + 1}/${fileList.length}] Uploading: ${fileName}... `,
-    )
-
+    
+    process.stdout.write(`[${i + 1}/${fileList.length}] Uploading: ${fileName}... `)
+    
     try {
       await uploadFile(filePath, cookies)
       console.log("✓")
@@ -141,14 +124,12 @@ const main = async () => {
       console.log(`✗ - ${error.message}`)
       failCount++
     }
-
-    await new Promise((resolve) => setTimeout(resolve, 500))
+    
+    await new Promise(resolve => setTimeout(resolve, 500))
   }
 
   console.log(`\n==========================================`)
-  console.log(
-    `Ingestion complete: ${successCount} succeeded, ${failCount} failed`,
-  )
+  console.log(`Ingestion complete: ${successCount} succeeded, ${failCount} failed`)
   console.log(`==========================================`)
 }
 

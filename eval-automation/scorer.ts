@@ -17,10 +17,7 @@ const resultsDir = process.env.RESULTS_DIR || path.join(__dirname, "results")
 const testModel = process.env.TEST_MODEL || "private-large"
 const timestamp = new Date().toISOString().slice(0, 10)
 const DEFAULT_INPUT_FILE = path.join(resultsDir, `eval_${testModel}_*.json`)
-const DEFAULT_OUTPUT_FILE = path.join(
-  resultsDir,
-  `scored_${testModel}_${timestamp}.json`,
-)
+const DEFAULT_OUTPUT_FILE = path.join(resultsDir, `scored_${testModel}_${timestamp}.json`)
 
 // Simple logger replacement
 const Logger = {
@@ -686,7 +683,7 @@ export async function scoreEvaluationFile(
   if (inputFilePath.includes("*")) {
     const files = await fs.readdir(resultsDir)
     const matchingFiles = files
-      .filter((f) => f.startsWith(`eval_${testModel}_`) && f.endsWith(".json"))
+      .filter(f => f.startsWith(`eval_${testModel}_`) && f.endsWith(".json"))
       .sort()
       .reverse()
     if (matchingFiles.length === 0) {
@@ -695,7 +692,10 @@ export async function scoreEvaluationFile(
     resolvedInputPath = path.join(resultsDir, matchingFiles[0])
     console.log(`📁 Found input file: ${resolvedInputPath}`)
   } else {
-    resolvedInputPath = path.resolve(path.dirname(__filename), inputFilePath)
+    resolvedInputPath = path.resolve(
+      path.dirname(__filename),
+      inputFilePath,
+    )
   }
 
   const resolvedOutputPath = path.resolve(

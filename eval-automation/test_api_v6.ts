@@ -4,7 +4,11 @@ import { sign } from "hono/jwt"
 import { db } from "../../server/db/client"
 import { getUserByEmail } from "../../server/db/user"
 import config from "../../server/config"
-import { readFileSync, writeFileSync, existsSync } from "fs"
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+} from "fs"
 import { join } from "path"
 
 // Use environment variable for test user email, or default to a test email
@@ -148,10 +152,7 @@ function parseAgenticResponse(text: string): string {
     let lastJsonStart = -1
     let searchPos = 0
     while (true) {
-      const composingIdx = text.indexOf(
-        '"displayText":"Composing your answer."',
-        searchPos,
-      )
+      const composingIdx = text.indexOf('"displayText":"Composing your answer."', searchPos)
       if (composingIdx === -1) break
 
       // Check if this composing event has synthesize_final_answer
@@ -160,7 +161,7 @@ function parseAgenticResponse(text: string): string {
       if (context.includes('"toolName":"synthesize_final_answer"')) {
         // Find the START of this JSON object (the opening brace before composingIdx)
         let jsonStart = composingIdx
-        while (jsonStart > 0 && text[jsonStart] !== "{") {
+        while (jsonStart > 0 && text[jsonStart] !== '{') {
           jsonStart--
         }
         lastJsonStart = jsonStart
@@ -189,18 +190,13 @@ function parseAgenticResponse(text: string): string {
         let answerText = text.substring(jsonEnd)
 
         // Find synthesis_completed event
-        const synthCompleteIdx = answerText.indexOf(
-          '{"type":"synthesis_completed"',
-        )
+        const synthCompleteIdx = answerText.indexOf('{"type":"synthesis_completed"')
         if (synthCompleteIdx !== -1) {
           answerText = answerText.substring(0, synthCompleteIdx)
         }
 
         // Remove citation metadata JSON blocks but keep the synthesize JSON
-        answerText = answerText.replace(
-          /\{[^{}]*"contextChunks"[^{}]*"citationMap"[^{}]*\}/gs,
-          " ",
-        )
+        answerText = answerText.replace(/\{[^{}]*"contextChunks"[^{}]*"citationMap"[^{}]*\}/gs, " ")
 
         // Clean up whitespace
         answerText = answerText.replace(/\s+/g, " ").trim()
@@ -255,9 +251,7 @@ function parseAgenticResponse(text: string): string {
         obj.data?.tool_name === "synthesize_final_answer" &&
         obj.data?.final_output
       ) {
-        console.log(
-          "Found synthesize_final_answer tool_call_end with final_output",
-        )
+        console.log("Found synthesize_final_answer tool_call_end with final_output")
         return cleanUpAnswer(obj.data.final_output)
       }
     }
@@ -408,13 +402,9 @@ async function testAPI(
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       if (attempt > 1) {
-        console.log(
-          `🔄 Retry attempt ${attempt}/${maxRetries} for question ${questionId}...`,
-        )
+        console.log(`🔄 Retry attempt ${attempt}/${maxRetries} for question ${questionId}...`)
         // Wait before retry (exponential backoff: 2s, 4s, 8s)
-        await new Promise((resolve) =>
-          setTimeout(resolve, Math.pow(2, attempt) * 1000),
-        )
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000))
       }
 
       // Create AbortController for timeout
@@ -445,9 +435,7 @@ async function testAPI(
 
         // Handle 401 Unauthorized - regenerate cookies and retry
         if (response.status === 401 && attempt < maxRetries) {
-          console.log(
-            `🔐 Token expired! Regenerating authentication cookies...`,
-          )
+          console.log(`🔐 Token expired! Regenerating authentication cookies...`)
           try {
             const newCookies = await generateAuthenticationCookies()
             updateCookiesInEnv(newCookies)
@@ -479,9 +467,7 @@ async function testAPI(
         while (true) {
           // Check for chunk timeout
           if (Date.now() - lastChunkTime > chunkTimeoutMs) {
-            console.log(
-              `⏰ No data received for ${chunkTimeoutMs}ms, breaking stream...`,
-            )
+            console.log(`⏰ No data received for ${chunkTimeoutMs}ms, breaking stream...`)
             reader.cancel()
             break
           }
@@ -510,9 +496,7 @@ async function testAPI(
         }
       }
 
-      console.log(
-        `📝 API response completed, length: ${rawResult.length} chars`,
-      )
+      console.log(`📝 API response completed, length: ${rawResult.length} chars`)
 
       // Parse the agentic response to extract the answer
       const parsedAnswer = parseAgenticResponse(rawResult)
@@ -521,23 +505,15 @@ async function testAPI(
       return { answer: parsedAnswer, success: true, cookies }
     } catch (error) {
       const errorCode = (error as any).code || "UNKNOWN"
-      console.error(
-        `❌ Error during API test for question ${questionId} (attempt ${attempt}/${maxRetries}):`,
-        errorCode,
-      )
+      console.error(`❌ Error during API test for question ${questionId} (attempt ${attempt}/${maxRetries}):`, errorCode)
 
       // Connection refused or network errors - retry
-      const isRetryable = [
-        "ECONNRESET",
-        "ConnectionRefused",
-        "ETIMEDOUT",
-        "ECONNREFUSED",
-      ].includes(errorCode)
+      const isRetryable = ["ECONNRESET", "ConnectionRefused", "ETIMEDOUT", "ECONNREFUSED"].includes(errorCode)
 
       if (isRetryable && attempt < maxRetries) {
         console.log(`⏳ Connection issue, waiting before retry...`)
         // Wait longer for connection issues (5s, 10s, 15s)
-        await new Promise((resolve) => setTimeout(resolve, attempt * 5000))
+        await new Promise(resolve => setTimeout(resolve, attempt * 5000))
         continue
       }
 
@@ -563,12 +539,7 @@ async function validateAuthentication(cookies: string): Promise<boolean> {
 
   try {
     const url = `http://localhost:${apiPort}/api/v1/message/create?selectedModelConfig=${encodeURIComponent(
-      JSON.stringify({
-        model: testModel,
-        reasoning: false,
-        websearch: false,
-        deepResearch: false,
-      }),
+      JSON.stringify({"model":testModel,"reasoning":false,"websearch":false,"deepResearch":false}),
     )}&message=${encodeURIComponent(testQuery)}`
 
     const response = await fetch(url, {
@@ -597,7 +568,9 @@ async function validateAuthentication(cookies: string): Promise<boolean> {
  * Main function that processes QA data
  */
 async function main() {
-  console.log("🎯 Starting API test with QA data...\n")
+  console.log(
+    "🎯 Starting API test with QA data...\n",
+  )
 
   try {
     // --- File paths ---
@@ -611,10 +584,7 @@ async function main() {
     )
     const testModel = process.env.TEST_MODEL || "private-large"
     const resultsDir = process.env.RESULTS_DIR || join(process.cwd(), "results")
-    const timestamp = new Date()
-      .toISOString()
-      .replace(/[:.]/g, "-")
-      .slice(0, 19)
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)
     const outputPath = join(
       resultsDir,
       `test_api_v6_results_${testModel}_${timestamp}.json`,
@@ -707,10 +677,8 @@ async function main() {
     let allNewResults: any[] = []
 
     // --- Filter out already processed questions ---
-    const doneQuestionIds = new Set(
-      existingResults.map((r) => r.question_id || r.Question?.substring(0, 50)),
-    )
-    const questionsToActuallyProcess = questionsToProcess.filter((q) => {
+    const doneQuestionIds = new Set(existingResults.map(r => r.question_id || r.Question?.substring(0, 50)))
+    const questionsToActuallyProcess = questionsToProcess.filter(q => {
       const qId = q.question_id || q.Question?.substring(0, 50)
       if (doneQuestionIds.has(qId)) {
         console.log(`⏭️  Skipping already processed question: ${qId}`)
@@ -720,9 +688,7 @@ async function main() {
     })
 
     console.log(`📊 Questions already done: ${doneQuestionIds.size}`)
-    console.log(
-      `📊 Questions to process now: ${questionsToActuallyProcess.length}`,
-    )
+    console.log(`📊 Questions to process now: ${questionsToActuallyProcess.length}`)
 
     if (questionsToActuallyProcess.length === 0) {
       console.log("✅ All questions already processed. Nothing to do.")
@@ -771,7 +737,7 @@ async function main() {
         if (j < batch.length - 1) {
           const delayMs = 2000 // 2 seconds between questions
           console.log(`⏳ Waiting ${delayMs}ms before next question...`)
-          await new Promise((resolve) => setTimeout(resolve, delayMs))
+          await new Promise(resolve => setTimeout(resolve, delayMs))
         }
       }
 
@@ -794,7 +760,11 @@ async function main() {
 
     // --- Final Save ---
     const finalResults = [...existingResults, ...allNewResults]
-    writeFileSync(outputPath, JSON.stringify(finalResults, null, 2), "utf-8")
+    writeFileSync(
+      outputPath,
+      JSON.stringify(finalResults, null, 2),
+      "utf-8",
+    )
 
     // --- Final Summary ---
     const successCount = allNewResults.filter(
@@ -810,7 +780,9 @@ async function main() {
     console.log(
       `✅ Successful answers extracted: ${successCount}/${allNewResults.length}`,
     )
-    console.log(`📁 Total entries in final file: ${finalResults.length}`)
+    console.log(
+      `📁 Total entries in final file: ${finalResults.length}`,
+    )
     console.log(`💾 Final results saved to: ${outputPath}`)
     console.log("=".repeat(100))
   } catch (error) {
