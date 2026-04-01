@@ -33,7 +33,11 @@ setup_test_script() {
         sed -i '' 's|from "../../../db/user"|from "./db/user"|g' "$server_dir/test_api.ts"
         sed -i '' 's|from "../../../config"|from "./config"|g' "$server_dir/test_api.ts"
         
-        sed -i '' 's|xyne-evals/qa_pipelines/generation_through_vespa/output/qa_output_hard.json|'"$eval_dir"'/qa_output_hard.json|g' "$server_dir/test_api.ts"
+        sed -i '' 's|from "../../server/db/client"|from "./db/client"|g' "$server_dir/test_api.ts"
+        sed -i '' 's|from "../../server/db/user"|from "./db/user"|g' "$server_dir/test_api.ts"
+        sed -i '' 's|from "../../server/config"|from "./config"|g' "$server_dir/test_api.ts"
+        
+        sed -i '' 's|xyne-evals/qa_pipelines/generation_through_vespa/output/qa_output_hard.json|../eval-automation/qa_output_hard.json|g' "$server_dir/test_api.ts"
     fi
     
     print_status "Test script ready"
