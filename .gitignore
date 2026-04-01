@@ -235,4 +235,6 @@ package-lock.json
 # eval-automation dependencies
 eval-automation/bun.lock
 eval-automation/node_modules/
+eval-automation/package.json
+eval-automation/package-lock.json
 deployment/portable/docker-compose.sync.yml
