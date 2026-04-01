@@ -231,4 +231,8 @@ deployment/portable/docker-compose.app.yml
 bun.lock
 bun.lockb
 package-lock.json
+
+# eval-automation dependencies
+eval-automation/bun.lock
+eval-automation/node_modules/
 deployment/portable/docker-compose.sync.yml
