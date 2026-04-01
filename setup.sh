@@ -21,6 +21,50 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+cleanup() {
+    print_status "Cleaning up eval environment..."
+    
+    local cleanup_vespa=${1:-false}
+    local cleanup_docker=${2:-false}
+    
+    print_status "Stopping tmux session..."
+    tmux kill-session -t xyne 2>/dev/null || true
+    
+    print_status "Killing processes on ports 3000/3010..."
+    lsof -ti :3000 | xargs kill -9 2>/dev/null || true
+    lsof -ti :3010 | xargs kill -9 2>/dev/null || true
+    pkill -f "bun run.*server.ts" 2>/dev/null || true
+    
+    if [ "$cleanup_vespa" = "true" ]; then
+        print_status "Cleaning Vespa data..."
+        docker exec vespa bash -c "rm -rf /opt/vespa/var/search/* 2>/dev/null || true"
+        docker exec vespa bash -c "vespa-stop 2>/dev/null || true"
+        docker exec vespa bash -c "sleep 2 && vespa-start 2>/dev/null || true"
+    fi
+    
+    if [ "$cleanup_docker" = "true" ]; then
+        print_warning "Stopping Docker services..."
+        docker stop xyne-db xyne-app 2>/dev/null || true
+    fi
+    
+    print_status "Cleaning eval-automation results..."
+    rm -f "$EVAL_AUTOMATION_DIR/.docs_ingested"
+    rm -f "$EVAL_AUTOMATION_DIR/.env"
+    
+    print_status "Cleanup complete!"
+}
+
+show_help() {
+    echo "Usage: ./setup.sh [command]"
+    echo ""
+    echo "Commands:"
+    echo "  (no args)      Run full setup + doc ingestion"
+    echo "  --clean        Clean up processes only"
+    echo "  --clean-vespa  Clean up + clear Vespa data"
+    echo "  --clean-all    Clean up + clear Vespa + stop Docker"
+    echo "  --help         Show this help message"
+}
+
 kill_existing_processes() {
     print_status "Killing existing processes on ports 3000 and 3010..."
     lsof -ti :3000 | xargs kill -9 2>/dev/null || true
@@ -380,14 +424,41 @@ EOF
 }
 
 main() {
-    kill_existing_processes
-    fix_env_settings
-    ensure_directories
-    ensure_collection
-    check_services
-    start_tmux_services
-    wait_for_services
-    ingest_docs
+    local cmd=${1:-}
+    
+    case "$cmd" in
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+        --clean)
+            cleanup "false" "false"
+            exit 0
+            ;;
+        --clean-vespa)
+            cleanup "true" "false"
+            exit 0
+            ;;
+        --clean-all)
+            cleanup "true" "true"
+            exit 0
+            ;;
+        "")
+            kill_existing_processes
+            fix_env_settings
+            ensure_directories
+            ensure_collection
+            check_services
+            start_tmux_services
+            wait_for_services
+            ingest_docs
+            ;;
+        *)
+            print_error "Unknown command: $cmd"
+            show_help
+            exit 1
+            ;;
+    esac
     
     echo ""
     echo "=========================================="
@@ -402,6 +473,11 @@ main() {
     echo "  Ctrl+b 1 - server"
     echo "  Ctrl+b 2 - frontend"
     echo "  Ctrl+b 3 - sync"
+    echo ""
+    echo "Cleanup commands:"
+    echo "  ./setup.sh --clean         - Stop processes, keep services"
+    echo "  ./setup.sh --clean-vespa   - Clean + clear Vespa data"
+    echo "  ./setup.sh --clean-all     - Full cleanup + stop Docker"
     echo ""
     echo "Next step: Run run.sh to execute the eval pipeline"
 }
