@@ -214,6 +214,7 @@ eval-automation/scoring_outputs/
 eval-automation/test_api.ts
 eval-automation/qa_output_hard.json
 eval-automation/.docs_ingested
+eval-automation/docs/*
 server/.venv/*
 
 deployment/grafana/grafana-storage
