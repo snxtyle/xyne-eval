@@ -127,11 +127,25 @@ main() {
     echo "  Eval Pipeline Complete!"
     echo "=========================================="
     echo ""
-    echo "Results should be available in:"
-    echo "  $EVAL_AUTOMATION_DIR/"
+    echo "Results available in:"
+    echo "  $EVAL_AUTOMATION_DIR/results/"
     echo ""
-    echo "To view tmux session:"
-    echo "  tmux attach -t xyne"
+    
+    read -p "Cleanup eval environment? (y/n/c): " -n 1 -r
+    echo
+    case "$REPLY" in
+        y|Y)
+            print_status "Cleaning up..."
+            cd "$SCRIPT_DIR" && ./setup.sh --clean
+            ;;
+        c|C)
+            print_status "Cleaning up including Vespa..."
+            cd "$SCRIPT_DIR" && ./setup.sh --clean-vespa
+            ;;
+        *)
+            print_status "Skipping cleanup. Run ./setup.sh --clean manually to cleanup."
+            ;;
+    esac
 }
 
 main "$@"
