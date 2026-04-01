@@ -101,6 +101,7 @@ web_modules/
 # dotenv environment variable files
 
 .env
+.env.default
 .env.development.local
 .env.test.local
 .env.production.local
@@ -208,6 +209,12 @@ server/vespa/vespa-cli_*
 server/downloads
 build
 server/eval-results
+eval-automation/results/
+eval-automation/scoring_outputs/
+eval-automation/test_api.ts
+eval-automation/docs/
+eval-automation/qa_output_hard.json
+eval-automation/.docs_ingested
 server/.venv/*
 
 deployment/grafana/grafana-storage
