@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
 import { sign } from "hono/jwt"
-import { db } from "../../server/db/client"
-import { getUserByEmail } from "../../server/db/user"
-import config from "../../server/config"
+import { db } from "../server/db/client"
+import { getUserByEmail } from "../server/db/user"
+import config from "../server/config"
 import {
   readFileSync,
   writeFileSync,
@@ -575,11 +575,7 @@ async function main() {
   try {
     // --- File paths ---
     const qaInputPath = join(
-      process.cwd(),
-      "xyne-evals",
-      "qa_pipelines",
-      "generation_through_vespa",
-      "output",
+      __dirname,
       "qa_output_hard.json",
     )
     const testModel = process.env.TEST_MODEL || "private-large"
