@@ -244,13 +244,13 @@ start_tmux_services() {
     sleep 5
 
     tmux new-window -t xyne -n "server"
-    tmux send-keys -t xyne:server "cd ${SCRIPT_DIR}/server && bun run dev" C-m
+    tmux send-keys -t xyne:server "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/server && bun run dev" C-m
 
     tmux new-window -t xyne -n "frontend"
-    tmux send-keys -t xyne:frontend "cd ${SCRIPT_DIR}/frontend && npm run dev" C-m
+    tmux send-keys -t xyne:frontend "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/frontend && npm run dev" C-m
 
     tmux new-window -t xyne -n "sync"
-    tmux send-keys -t xyne:sync "cd ${SCRIPT_DIR}/server && bun run dev:sync" C-m
+    tmux send-keys -t xyne:sync "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/server && bun run dev:sync" C-m
 
     print_status "4 tmux windows created (docker, server, frontend, sync)"
 }
@@ -258,7 +258,7 @@ start_tmux_services() {
 wait_for_services() {
     print_status "Waiting for services to be ready..."
     
-    local max_attempts=60
+    local max_attempts=90
     local attempt=0
     
     while [ $attempt -lt $max_attempts ]; do
@@ -268,11 +268,12 @@ wait_for_services() {
         fi
         attempt=$((attempt + 1))
         echo -n "."
-        sleep 2
+        sleep 3
     done
     
     if [ $attempt -eq $max_attempts ]; then
         print_error "Server did not become ready in time"
+        print_error "Check tmux session for errors: tmux attach -t xyne"
         return 1
     fi
     
