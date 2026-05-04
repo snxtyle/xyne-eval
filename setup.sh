@@ -200,6 +200,21 @@ install_dependencies() {
         export PATH="$BUN_INSTALL/bin:$PATH"
     fi
     
+    # Install docker-compose separately (it's often not included in docker.io)
+    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null 2>&1; then
+        print_status "Installing docker-compose..."
+        if [ "$readonly_fs" = false ]; then
+            $SUDO apt-get install -y -qq docker-compose 2>/dev/null || {
+                # Try alternative: install compose plugin via pip or standalone binary
+                print_warning "Failed to install docker-compose via apt, trying standalone..."
+                curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose 2>/dev/null && \
+                $SUDO chmod +x /usr/local/bin/docker-compose 2>/dev/null || {
+                    print_warning "Failed to install docker-compose standalone"
+                }
+            }
+        fi
+    fi
+    
     print_status "Dependencies installed"
     
     # Install Node.js dependencies for server
@@ -326,11 +341,12 @@ ensure_env_file() {
         env_changed=true
     fi
     
-    # Generate random hex strings for required secrets if not set
+    # Generate random base64 strings for required secrets if not set
     local required_vars="ENCRYPTION_KEY SERVICE_ACCOUNT_ENCRYPTION_KEY JWT_SECRET ACCESS_TOKEN_SECRET REFRESH_TOKEN_SECRET"
     for var in $required_vars; do
         if ! grep -q "^${var}=" "$env_file" 2>/dev/null || grep -q "^${var}=$" "$env_file" 2>/dev/null; then
-            local value=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)
+            # Generate 256-bit (32 bytes) base64-encoded key
+            local value=$(openssl rand -base64 32 2>/dev/null || head -c 32 /dev/urandom | base64)
             if grep -q "^${var}=" "$env_file" 2>/dev/null; then
                 sed -i "s|^${var}=.*|${var}=${value}|" "$env_file"
             else
