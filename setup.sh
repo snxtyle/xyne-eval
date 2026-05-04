@@ -30,13 +30,51 @@ else
     SUDO="sudo"
 fi
 
-# Error handler
+# Error handler - captures logs before exit but keeps tmux for debugging
 cleanup_on_error() {
     local exit_code=$?
     if [ $exit_code -ne 0 ]; then
         print_error "Script failed with exit code $exit_code"
-        print_error "Check the output above for details"
+        
+        # Capture debug information
+        print_error "=== DEBUG INFORMATION ==="
+        
+        # Check if tmux session exists
+        if tmux has-session -t xyne 2>/dev/null; then
+            print_error "tmux session exists. Capturing logs..."
+            
+            # Create output directory for logs
+            local log_dir="${SCRIPT_DIR}/logs"
+            mkdir -p "$log_dir"
+            
+            # Capture logs from each window if possible
+            for window in docker server frontend sync; do
+                tmux capture-pane -t xyne:$window -p 2>/dev/null > "${log_dir}/${window}.log" && \
+                    print_error "Captured ${window} logs to: ${log_dir}/${window}.log" || \
+                    print_error "Could not capture ${window} logs"
+            done
+            
+            # Show last 20 lines of server window
+            print_error ""
+            print_error "=== SERVER WINDOW LOGS (last 20 lines) ==="
+            tmux capture-pane -t xyne:server -p 2>/dev/null | tail -20 || print_error "No server logs available"
+            
+            print_error ""
+            print_error "=== DOCKER CONTAINER STATUS ==="
+            docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || print_error "Cannot get container status"
+            
+            print_error ""
+            print_error "To debug manually: tmux attach -t xyne"
+            print_error "Or view logs in: ${log_dir}/"
+        else
+            print_error "No tmux session found (was never created or was cleaned up)"
+        fi
+        
+        print_error "========================"
     fi
+    
+    # Return original exit code
+    return $exit_code
 }
 trap cleanup_on_error EXIT
 
@@ -354,9 +392,9 @@ start_tmux_services() {
             tmux new-session -d -s xyne -n "docker"
             tmux send-keys -t xyne:docker "cd ${SCRIPT_DIR} && $compose_cmd -f deployment/docker-compose.yml up" C-m
             
-            # Wait longer for Docker services to start
-            print_status "Waiting 30s for Docker services to initialize..."
-            sleep 30
+            # Wait for Docker containers to be ready
+            print_status "Waiting for Docker containers to initialize..."
+            wait_for_docker_containers
         else
             print_warning "Docker not available, skipping Docker services"
             tmux new-session -d -s xyne -n "docker"
@@ -368,7 +406,7 @@ start_tmux_services() {
         tmux send-keys -t xyne:docker 'echo Docker services already running' C-m
     fi
 
-    sleep 5
+    sleep 2
 
     tmux new-window -t xyne -n "server"
     tmux send-keys -t xyne:server "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/server && bun run dev" C-m
@@ -380,6 +418,53 @@ start_tmux_services() {
     tmux send-keys -t xyne:sync "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/server && bun run dev:sync" C-m
 
     print_status "4 tmux windows created (docker, server, frontend, sync)"
+}
+
+wait_for_docker_containers() {
+    print_status "Waiting for Docker containers to be healthy..."
+    
+    local max_attempts=60
+    local attempt=0
+    local db_ready=false
+    local vespa_ready=false
+    
+    while [ $attempt -lt $max_attempts ]; do
+        # Check if containers exist
+        if docker ps --format '{{.Names}}' | grep -q "^xyne-db$"; then
+            # Check if postgres is accepting connections
+            if docker exec xyne-db pg_isready -U xyne -d xyne &> /dev/null 2>&1; then
+                db_ready=true
+                print_status "PostgreSQL is ready"
+            fi
+        fi
+        
+        if docker ps --format '{{.Names}}' | grep -q "^vespa$"; then
+            vespa_ready=true
+            # Vespa takes longer, don't wait for it explicitly
+            print_status "Vespa container is running"
+        fi
+        
+        # Only require DB to be ready (Vespa can start in parallel)
+        if [ "$db_ready" = true ]; then
+            print_status "Database is ready, proceeding..."
+            return 0
+        fi
+        
+        attempt=$((attempt + 1))
+        if [ $((attempt % 10)) -eq 0 ]; then
+            echo ""
+            print_status "Still waiting for containers... ($attempt/$max_attempts)"
+            # Show container status
+            docker ps --format "table {{.Names}}\t{{.Status}}" 2>/dev/null || true
+        fi
+        echo -n "."
+        sleep 2
+    done
+    
+    echo ""
+    print_warning "Timeout waiting for containers, but continuing anyway..."
+    print_warning "Server may fail to connect to database"
+    # Don't fail here, let the server try anyway
 }
 
 wait_for_services() {
