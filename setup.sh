@@ -40,6 +40,13 @@ cleanup_on_error() {
 }
 trap cleanup_on_error EXIT
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EVAL_AUTOMATION_DIR="${SCRIPT_DIR}/eval-automation"
+DOCS_DIR="${EVAL_AUTOMATION_DIR}/docs"
+
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+
 install_dependencies() {
     print_status "Installing required dependencies..."
     
@@ -85,11 +92,42 @@ install_dependencies() {
             print_warning "Please install bun manually from https://bun.sh"
         fi
         
+        # Re-export PATH in case bun was just installed
         export BUN_INSTALL="$HOME/.bun"
         export PATH="$BUN_INSTALL/bin:$PATH"
     fi
     
     print_status "Dependencies installed"
+    
+    # Install Node.js dependencies for server
+    if [ -f "${SCRIPT_DIR}/server/package.json" ]; then
+        if [ ! -d "${SCRIPT_DIR}/server/node_modules" ]; then
+            print_status "Installing server dependencies..."
+            cd "${SCRIPT_DIR}/server"
+            if command -v bun &> /dev/null; then
+                bun install || npm install || print_warning "Failed to install server dependencies"
+            elif command -v npm &> /dev/null; then
+                npm install || print_warning "Failed to install server dependencies"
+            fi
+            cd "${SCRIPT_DIR}"
+        else
+            print_status "Server dependencies already installed"
+        fi
+    fi
+    
+    # Install Node.js dependencies for frontend
+    if [ -f "${SCRIPT_DIR}/frontend/package.json" ]; then
+        if [ ! -d "${SCRIPT_DIR}/frontend/node_modules" ]; then
+            print_status "Installing frontend dependencies..."
+            cd "${SCRIPT_DIR}/frontend"
+            if command -v npm &> /dev/null; then
+                npm install || print_warning "Failed to install frontend dependencies"
+            fi
+            cd "${SCRIPT_DIR}"
+        else
+            print_status "Frontend dependencies already installed"
+        fi
+    fi
 }
 
 kill_existing_processes() {
@@ -213,6 +251,20 @@ start_tmux_services() {
         return 1
     fi
     
+    # Export bun path for all future commands
+    export BUN_INSTALL="$HOME/.bun"
+    export PATH="$BUN_INSTALL/bin:$PATH"
+    
+    # Verify bun is accessible
+    if ! command -v bun &> /dev/null; then
+        print_error "bun is not in PATH. Cannot start services."
+        print_error "BUN_INSTALL: $BUN_INSTALL"
+        print_error "PATH: $PATH"
+        return 1
+    fi
+    
+    print_status "Verified bun is available at: $(which bun)"
+    
     tmux kill-session -t xyne 2>/dev/null || true
     sleep 1
     tmux set -g mouse on 2>/dev/null || true
@@ -230,6 +282,10 @@ start_tmux_services() {
             print_status "Starting Docker services..."
             tmux new-session -d -s xyne -n "docker"
             tmux send-keys -t xyne:docker "cd ${SCRIPT_DIR} && docker-compose -f deployment/docker-compose.yml up" C-m
+            
+            # Wait longer for Docker services to start
+            print_status "Waiting 30s for Docker services to initialize..."
+            sleep 30
         else
             print_warning "Docker not available, skipping Docker services"
             tmux new-session -d -s xyne -n "docker"
