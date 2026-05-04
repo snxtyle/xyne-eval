@@ -47,7 +47,7 @@ install_dependencies() {
     $SUDO apt-get update -qq
     
     # Install required packages
-    local packages="lsof tmux docker.io docker-compose-plugin curl jq"
+    local packages="apt-utils lsof tmux docker.io docker-compose curl jq unzip"
     
     for pkg in $packages; do
         if ! command -v "$pkg" &> /dev/null && ! dpkg -l "$pkg" &> /dev/null; then
@@ -66,7 +66,25 @@ install_dependencies() {
     # Install bun if not present
     if ! command -v bun &> /dev/null; then
         print_status "Installing bun..."
-        curl -fsSL https://bun.sh/install | bash
+        if command -v unzip &> /dev/null; then
+            curl -fsSL https://bun.sh/install | bash || {
+                print_warning "Failed to install bun via official installer"
+            }
+        fi
+        
+        # Check if bun was installed, if not try npm as fallback
+        if ! command -v bun &> /dev/null && command -v npm &> /dev/null; then
+            print_status "Attempting to install bun via npm..."
+            npm install -g bun || {
+                print_warning "Failed to install bun via npm"
+            }
+        fi
+        
+        if ! command -v bun &> /dev/null; then
+            print_warning "Could not install bun automatically"
+            print_warning "Please install bun manually from https://bun.sh"
+        fi
+        
         export BUN_INSTALL="$HOME/.bun"
         export PATH="$BUN_INSTALL/bin:$PATH"
     fi
