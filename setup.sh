@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -euo pipefail
+
 echo "=========================================="
 echo "  Xyne Eval Setup + Doc Ingestion"
 echo "=========================================="
@@ -18,13 +20,68 @@ print_warning() {
 }
 
 print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} $1" >&2
+}
+
+# Detect if running as root for sudo usage
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+else
+    SUDO="sudo"
+fi
+
+# Error handler
+cleanup_on_error() {
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
+        print_error "Script failed with exit code $exit_code"
+        print_error "Check the output above for details"
+    fi
+}
+trap cleanup_on_error EXIT
+
+install_dependencies() {
+    print_status "Installing required dependencies..."
+    
+    # Update package lists
+    $SUDO apt-get update -qq
+    
+    # Install required packages
+    local packages="lsof tmux docker.io docker-compose-plugin curl jq"
+    
+    for pkg in $packages; do
+        if ! command -v "$pkg" &> /dev/null && ! dpkg -l "$pkg" &> /dev/null; then
+            print_status "Installing $pkg..."
+            $SUDO apt-get install -y -qq "$pkg" || {
+                print_warning "Failed to install $pkg, attempting to continue..."
+            }
+        fi
+    done
+    
+    # Ensure docker service is running
+    if command -v docker &> /dev/null; then
+        $SUDO systemctl start docker 2>/dev/null || true
+    fi
+    
+    # Install bun if not present
+    if ! command -v bun &> /dev/null; then
+        print_status "Installing bun..."
+        curl -fsSL https://bun.sh/install | bash
+        export BUN_INSTALL="$HOME/.bun"
+        export PATH="$BUN_INSTALL/bin:$PATH"
+    fi
+    
+    print_status "Dependencies installed"
 }
 
 kill_existing_processes() {
     print_status "Killing existing processes on ports 3000 and 3010..."
-    lsof -ti :3000 | xargs kill -9 2>/dev/null || true
-    lsof -ti :3010 | xargs kill -9 2>/dev/null || true
+    
+    if command -v lsof &> /dev/null; then
+        lsof -ti :3000 | xargs kill -9 2>/dev/null || true
+        lsof -ti :3010 | xargs kill -9 2>/dev/null || true
+    fi
+    
     pkill -f "bun run.*server.ts" 2>/dev/null || true
     sleep 2
     print_status "Existing processes killed"
@@ -32,6 +89,11 @@ kill_existing_processes() {
 
 ensure_collection() {
     print_status "Ensuring collection exists in database..."
+    
+    if ! command -v docker &> /dev/null; then
+        print_error "Docker is not installed. Cannot create collection."
+        return 1
+    fi
     
     local collection_name="cl_eval_xyne_search"
     local collection_exists=$(docker exec xyne-db psql -U xyne -d xyne -t -c "SELECT COUNT(*) FROM collections WHERE name = '$collection_name';" 2>/dev/null || echo "0")
@@ -42,10 +104,9 @@ ensure_collection() {
         
         if [ -n "$result" ]; then
             print_status "Collection created with ID: $result"
-            # Export for later use
             export COLLECTION_ID="$result"
         else
-            print_error "Failed to create collection"
+            print_warning "Failed to create collection (database may not be ready yet)"
         fi
     else
         local collection_id=$(docker exec xyne-db psql -U xyne -d xyne -t -c "SELECT id FROM collections WHERE name = '$collection_name' LIMIT 1;" 2>/dev/null | tr -d ' ')
@@ -57,16 +118,20 @@ ensure_collection() {
 fix_env_settings() {
     print_status "Fixing environment settings..."
     
-    # Fix LAYOUT_PARSING_BASE_URL in eval-automation/.env
-    if grep -q "LAYOUT_PARSING_BASE_URL='https://.*ngrok" "$EVAL_AUTOMATION_DIR/.env" 2>/dev/null; then
-        print_status "Commenting out expired ngrok URL in eval-automation/.env"
-        sed -i '' "s|^LAYOUT_PARSING_BASE_URL=|# LAYOUT_PARSING_BASE_URL=|g" "$EVAL_AUTOMATION_DIR/.env"
+    # Fix LAYOUT_PARSING_BASE_URL in eval-automation/.env (Linux-compatible sed)
+    if [ -f "$EVAL_AUTOMATION_DIR/.env" ]; then
+        if grep -q "LAYOUT_PARSING_BASE_URL='https://.*ngrok" "$EVAL_AUTOMATION_DIR/.env" 2>/dev/null; then
+            print_status "Commenting out expired ngrok URL in eval-automation/.env"
+            sed -i "s|^LAYOUT_PARSING_BASE_URL=|# LAYOUT_PARSING_BASE_URL=|g" "$EVAL_AUTOMATION_DIR/.env"
+        fi
     fi
     
-    # Fix LAYOUT_PARSING_BASE_URL in server/.env
-    if grep -q "LAYOUT_PARSING_BASE_URL='https://.*ngrok" "$SCRIPT_DIR/server/.env" 2>/dev/null; then
-        print_status "Commenting out expired ngrok URL in server/.env"
-        sed -i '' "s|^LAYOUT_PARSING_BASE_URL=|# LAYOUT_PARSING_BASE_URL=|g" "$SCRIPT_DIR/server/.env"
+    # Fix LAYOUT_PARSING_BASE_URL in server/.env (Linux-compatible sed)
+    if [ -f "$SCRIPT_DIR/server/.env" ]; then
+        if grep -q "LAYOUT_PARSING_BASE_URL='https://.*ngrok" "$SCRIPT_DIR/server/.env" 2>/dev/null; then
+            print_status "Commenting out expired ngrok URL in server/.env"
+            sed -i "s|^LAYOUT_PARSING_BASE_URL=|# LAYOUT_PARSING_BASE_URL=|g" "$SCRIPT_DIR/server/.env"
+        fi
     fi
 }
 
@@ -103,6 +168,11 @@ set +a
 check_services() {
     print_status "Checking if services are already running..."
     
+    if ! command -v tmux &> /dev/null; then
+        print_error "tmux is not installed"
+        return 1
+    fi
+    
     if tmux has-session -t xyne 2>/dev/null; then
         print_warning "Session 'xyne' already exists"
         read -p "Do you want to restart services? (y/n): " -n 1 -r
@@ -120,17 +190,33 @@ check_services() {
 start_tmux_services() {
     print_status "Starting tmux services..."
     
+    if ! command -v tmux &> /dev/null; then
+        print_error "tmux is not installed. Cannot start services."
+        return 1
+    fi
+    
     tmux kill-session -t xyne 2>/dev/null || true
     sleep 1
     tmux set -g mouse on 2>/dev/null || true
 
-    VESPA_RUNNING=$(docker ps --format '{{.Names}}' | grep -q "^vespa$" && echo "yes" || echo "no")
-    POSTGRES_RUNNING=$(docker ps --format '{{.Names}}' | grep -q "^xyne-db$" && echo "yes" || echo "no")
+    local VESPA_RUNNING="no"
+    local POSTGRES_RUNNING="no"
+    
+    if command -v docker &> /dev/null; then
+        VESPA_RUNNING=$(docker ps --format '{{.Names}}' | grep -q "^vespa$" && echo "yes" || echo "no")
+        POSTGRES_RUNNING=$(docker ps --format '{{.Names}}' | grep -q "^xyne-db$" && echo "yes" || echo "no")
+    fi
 
     if [ "$VESPA_RUNNING" != "yes" ] || [ "$POSTGRES_RUNNING" != "yes" ]; then
-        print_status "Starting Docker services..."
-        tmux new-session -d -s xyne -n "docker"
-        tmux send-keys -t xyne:docker "cd ${SCRIPT_DIR} && docker-compose -f deployment/docker-compose.yml up" C-m
+        if command -v docker &> /dev/null; then
+            print_status "Starting Docker services..."
+            tmux new-session -d -s xyne -n "docker"
+            tmux send-keys -t xyne:docker "cd ${SCRIPT_DIR} && docker-compose -f deployment/docker-compose.yml up" C-m
+        else
+            print_warning "Docker not available, skipping Docker services"
+            tmux new-session -d -s xyne -n "docker"
+            tmux send-keys -t xyne:docker 'echo Docker not available' C-m
+        fi
     else
         print_status "Docker services already running"
         tmux new-session -d -s xyne -n "docker"
@@ -380,6 +466,7 @@ EOF
 }
 
 main() {
+    install_dependencies
     kill_existing_processes
     fix_env_settings
     ensure_directories
