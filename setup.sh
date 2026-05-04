@@ -310,6 +310,85 @@ ensure_directories() {
     fi
 }
 
+ensure_env_file() {
+    print_status "Ensuring server .env file has required variables..."
+    
+    local env_file="$SCRIPT_DIR/server/.env"
+    local env_changed=false
+    
+    if [ ! -f "$env_file" ]; then
+        print_status "Creating server/.env from defaults..."
+        if [ -f "$SCRIPT_DIR/deployment/portable/.env.default" ]; then
+            cp "$SCRIPT_DIR/deployment/portable/.env.default" "$env_file"
+        else
+            touch "$env_file"
+        fi
+        env_changed=true
+    fi
+    
+    # Generate random hex strings for required secrets if not set
+    local required_vars="ENCRYPTION_KEY SERVICE_ACCOUNT_ENCRYPTION_KEY JWT_SECRET ACCESS_TOKEN_SECRET REFRESH_TOKEN_SECRET"
+    for var in $required_vars; do
+        if ! grep -q "^${var}=" "$env_file" 2>/dev/null || grep -q "^${var}=$" "$env_file" 2>/dev/null; then
+            local value=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p)
+            if grep -q "^${var}=" "$env_file" 2>/dev/null; then
+                sed -i "s|^${var}=.*|${var}=${value}|" "$env_file"
+            else
+                echo "${var}=${value}" >> "$env_file"
+            fi
+            print_status "Set ${var} in .env"
+            env_changed=true
+        fi
+    done
+    
+    # Set DATABASE_HOST to localhost for local dev (not docker network hostname)
+    if grep -q "^DATABASE_HOST=xyne-db" "$env_file" 2>/dev/null; then
+        sed -i "s|^DATABASE_HOST=xyne-db|DATABASE_HOST=localhost|" "$env_file"
+        print_status "Set DATABASE_HOST=localhost for local dev"
+        env_changed=true
+    fi
+    
+    # Set DATABASE_URL to use localhost
+    if grep -q "DATABASE_URL=.*xyne-db" "$env_file" 2>/dev/null; then
+        sed -i "s|xyne-db|localhost|g" "$env_file"
+        print_status "Set DATABASE_URL to use localhost"
+        env_changed=true
+    fi
+    
+    # Set VESPA_HOST to localhost for local dev
+    if grep -q "^VESPA_HOST=vespa" "$env_file" 2>/dev/null; then
+        sed -i "s|^VESPA_HOST=vespa|VESPA_HOST=localhost|" "$env_file"
+        print_status "Set VESPA_HOST=localhost for local dev"
+        env_changed=true
+    fi
+    
+    # Set HOST if empty
+    if ! grep -q "^HOST=" "$env_file" 2>/dev/null || grep -q "^HOST=$" "$env_file" 2>/dev/null; then
+        if grep -q "^HOST=" "$env_file" 2>/dev/null; then
+            sed -i "s|^HOST=.*|HOST=http://localhost:3000|" "$env_file"
+        else
+            echo "HOST=http://localhost:3000" >> "$env_file"
+        fi
+        env_changed=true
+    fi
+    
+    # Set NODE_ENV if empty
+    if ! grep -q "^NODE_ENV=" "$env_file" 2>/dev/null || grep -q "^NODE_ENV=$" "$env_file" 2>/dev/null; then
+        if grep -q "^NODE_ENV=" "$env_file" 2>/dev/null; then
+            sed -i "s|^NODE_ENV=.*|NODE_ENV=development|" "$env_file"
+        else
+            echo "NODE_ENV=development" >> "$env_file"
+        fi
+        env_changed=true
+    fi
+    
+    if [ "$env_changed" = true ]; then
+        print_status "Server .env updated with required variables"
+    else
+        print_status "Server .env already configured"
+    fi
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EVAL_AUTOMATION_DIR="${SCRIPT_DIR}/eval-automation"
 DOCS_DIR="${EVAL_AUTOMATION_DIR}/docs"
@@ -372,6 +451,9 @@ start_tmux_services() {
     sleep 1
     tmux set -g mouse on 2>/dev/null || true
 
+    # Ensure logs directory exists
+    mkdir -p "${SCRIPT_DIR}/logs"
+
     local VESPA_RUNNING="no"
     local POSTGRES_RUNNING="no"
     
@@ -388,9 +470,12 @@ start_tmux_services() {
                 compose_cmd="docker compose"
             fi
             
+            # Create required directories for Docker volumes before starting
+            mkdir -p "$SCRIPT_DIR/server/vespa-data" "$SCRIPT_DIR/server/vespa-logs" "$SCRIPT_DIR/server/xyne-data"
+            
             print_status "Starting Docker services using: $compose_cmd"
             tmux new-session -d -s xyne -n "docker"
-            tmux send-keys -t xyne:docker "cd ${SCRIPT_DIR} && $compose_cmd -f deployment/docker-compose.yml up" C-m
+            tmux send-keys -t xyne:docker "cd ${SCRIPT_DIR} && $compose_cmd -f deployment/docker-compose.yml up 2>&1 | tee ${SCRIPT_DIR}/logs/docker-compose.log" C-m
             
             # Wait for Docker containers to be ready
             print_status "Waiting for Docker containers to initialize..."
@@ -426,25 +511,18 @@ wait_for_docker_containers() {
     local max_attempts=60
     local attempt=0
     local db_ready=false
-    local vespa_ready=false
     
     while [ $attempt -lt $max_attempts ]; do
-        # Check if containers exist
-        if docker ps --format '{{.Names}}' | grep -q "^xyne-db$"; then
+        # Check for any xyne-db container
+        if docker ps --format '{{.Names}}' | grep -q "xyne-db\|xyne_postgres"; then
             # Check if postgres is accepting connections
-            if docker exec xyne-db pg_isready -U xyne -d xyne &> /dev/null 2>&1; then
+            if docker exec xyne-db pg_isready -U xyne -d xyne &> /dev/null 2>&1 || \
+               docker exec xyne_postgres pg_isready -U xyne -d xyne &> /dev/null 2>&1; then
                 db_ready=true
                 print_status "PostgreSQL is ready"
             fi
         fi
         
-        if docker ps --format '{{.Names}}' | grep -q "^vespa$"; then
-            vespa_ready=true
-            # Vespa takes longer, don't wait for it explicitly
-            print_status "Vespa container is running"
-        fi
-        
-        # Only require DB to be ready (Vespa can start in parallel)
         if [ "$db_ready" = true ]; then
             print_status "Database is ready, proceeding..."
             return 0
@@ -454,8 +532,16 @@ wait_for_docker_containers() {
         if [ $((attempt % 10)) -eq 0 ]; then
             echo ""
             print_status "Still waiting for containers... ($attempt/$max_attempts)"
-            # Show container status
             docker ps --format "table {{.Names}}\t{{.Status}}" 2>/dev/null || true
+            
+            # Check docker-compose log for errors
+            if [ -f "${SCRIPT_DIR}/logs/docker-compose.log" ]; then
+                local last_errors=$(tail -5 "${SCRIPT_DIR}/logs/docker-compose.log" 2>/dev/null)
+                if echo "$last_errors" | grep -qi "error\|fail\|refused"; then
+                    print_warning "Docker compose log errors detected:"
+                    echo "$last_errors" | head -5
+                fi
+            fi
         fi
         echo -n "."
         sleep 2
@@ -464,7 +550,12 @@ wait_for_docker_containers() {
     echo ""
     print_warning "Timeout waiting for containers, but continuing anyway..."
     print_warning "Server may fail to connect to database"
-    # Don't fail here, let the server try anyway
+    
+    # Print docker-compose logs for debugging
+    if [ -f "${SCRIPT_DIR}/logs/docker-compose.log" ]; then
+        print_warning "Docker compose log (last 20 lines):"
+        tail -20 "${SCRIPT_DIR}/logs/docker-compose.log" 2>/dev/null
+    fi
 }
 
 wait_for_services() {
@@ -700,6 +791,7 @@ main() {
     install_dependencies
     kill_existing_processes
     fix_env_settings
+    ensure_env_file
     ensure_directories
     ensure_collection
     check_services
