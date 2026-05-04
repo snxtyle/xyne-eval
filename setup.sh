@@ -50,24 +50,80 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 install_dependencies() {
     print_status "Installing required dependencies..."
     
-    # Update package lists
-    $SUDO apt-get update -qq
+    # Detect if we're in a container (Docker siblings pattern)
+    local in_container=false
+    if [ -f /.dockerenv ] || grep -q docker /proc/1/cgroup 2>/dev/null; then
+        in_container=true
+        print_status "Running in container - detecting environment..."
+    fi
     
-    # Install required packages
-    local packages="apt-utils lsof tmux docker.io docker-compose curl jq unzip"
+    # Detect container-optimized OS (read-only root)
+    local readonly_fs=false
+    if ! touch /test_write_permission 2>/dev/null; then
+        readonly_fs=true
+        print_status "Detected read-only filesystem (Container-Optimized OS)"
+    else
+        rm -f /test_write_permission
+    fi
     
-    for pkg in $packages; do
-        if ! command -v "$pkg" &> /dev/null && ! dpkg -l "$pkg" &> /dev/null; then
-            print_status "Installing $pkg..."
-            $SUDO apt-get install -y -qq "$pkg" || {
-                print_warning "Failed to install $pkg, attempting to continue..."
-            }
+    # Check if Docker is available via sibling mount
+    local docker_sibling=false
+    if [ -S /var/run/docker.sock ] || [ -S /run/docker.sock ]; then
+        docker_sibling=true
+        print_status "Docker socket detected (siblings mode)"
+    fi
+    
+    # Only run apt-get if we're not on a read-only filesystem
+    if [ "$readonly_fs" = false ]; then
+        # Update package lists
+        $SUDO apt-get update -qq 2>/dev/null || {
+            print_warning "apt-get update failed - may be in container without apt"
+        }
+        
+        # Check if Docker is already available
+        local docker_available=false
+        if command -v docker &> /dev/null && docker ps &> /dev/null 2>&1; then
+            docker_available=true
         fi
-    done
+        
+        # Install required packages (excluding docker if already available)
+        local packages="apt-utils lsof tmux curl jq unzip"
+        if [ "$docker_available" = false ] && [ "$docker_sibling" = false ]; then
+            packages="$packages docker.io docker-compose"
+        fi
+        
+        for pkg in $packages; do
+            if ! command -v "$pkg" &> /dev/null && ! dpkg -l "$pkg" &> /dev/null 2>&1; then
+                print_status "Installing $pkg..."
+                $SUDO apt-get install -y -qq "$pkg" 2>/dev/null || {
+                    print_warning "Failed to install $pkg, continuing..."
+                }
+            fi
+        done
+        
+        # Only try to start docker service if we installed it
+        if [ "$docker_available" = false ] && [ "$docker_sibling" = false ] && command -v docker &> /dev/null; then
+            print_status "Attempting to start Docker service..."
+            $SUDO systemctl start docker 2>/dev/null || true
+        fi
+    else
+        print_status "Skipping apt-get (read-only filesystem)"
+    fi
     
-    # Ensure docker service is running
+    # Verify Docker is working (either native or sibling)
     if command -v docker &> /dev/null; then
-        $SUDO systemctl start docker 2>/dev/null || true
+        if docker ps &> /dev/null 2>&1; then
+            print_status "Docker is operational"
+        elif [ "$docker_sibling" = true ]; then
+            print_warning "Docker command available but cannot connect - checking socket permissions..."
+            # Try adding user to docker group if socket exists
+            if [ -S /var/run/docker.sock ]; then
+                ls -la /var/run/docker.sock
+            fi
+        fi
+    else
+        print_error "Docker not found. Please ensure Docker is available."
+        return 1
     fi
     
     # Install bun if not present
@@ -82,7 +138,7 @@ install_dependencies() {
         # Check if bun was installed, if not try npm as fallback
         if ! command -v bun &> /dev/null && command -v npm &> /dev/null; then
             print_status "Attempting to install bun via npm..."
-            npm install -g bun || {
+            npm install -g bun 2>/dev/null || {
                 print_warning "Failed to install bun via npm"
             }
         fi
@@ -90,6 +146,7 @@ install_dependencies() {
         if ! command -v bun &> /dev/null; then
             print_warning "Could not install bun automatically"
             print_warning "Please install bun manually from https://bun.sh"
+            return 1
         fi
         
         # Re-export PATH in case bun was just installed
@@ -279,9 +336,15 @@ start_tmux_services() {
 
     if [ "$VESPA_RUNNING" != "yes" ] || [ "$POSTGRES_RUNNING" != "yes" ]; then
         if command -v docker &> /dev/null; then
-            print_status "Starting Docker services..."
+            # Detect docker compose command (v2 vs v1)
+            local compose_cmd="docker-compose"
+            if docker compose version &> /dev/null 2>&1; then
+                compose_cmd="docker compose"
+            fi
+            
+            print_status "Starting Docker services using: $compose_cmd"
             tmux new-session -d -s xyne -n "docker"
-            tmux send-keys -t xyne:docker "cd ${SCRIPT_DIR} && docker-compose -f deployment/docker-compose.yml up" C-m
+            tmux send-keys -t xyne:docker "cd ${SCRIPT_DIR} && $compose_cmd -f deployment/docker-compose.yml up" C-m
             
             # Wait longer for Docker services to start
             print_status "Waiting 30s for Docker services to initialize..."
