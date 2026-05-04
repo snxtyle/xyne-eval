@@ -86,10 +86,15 @@ install_dependencies() {
             docker_available=true
         fi
         
-        # Install required packages (excluding docker if already available)
+        # Install required packages
+        # Note: Even with docker_sibling (socket available), we still need docker.io CLI
         local packages="apt-utils lsof tmux curl jq unzip"
-        if [ "$docker_available" = false ] && [ "$docker_sibling" = false ]; then
-            packages="$packages docker.io docker-compose"
+        if ! command -v docker &> /dev/null; then
+            packages="$packages docker.io"
+        fi
+        # Only install docker-compose standalone if docker isn't available AND no socket
+        if [ "$docker_sibling" = false ] && ! command -v docker &> /dev/null; then
+            packages="$packages docker-compose"
         fi
         
         for pkg in $packages; do
@@ -114,15 +119,18 @@ install_dependencies() {
     if command -v docker &> /dev/null; then
         if docker ps &> /dev/null 2>&1; then
             print_status "Docker is operational"
-        elif [ "$docker_sibling" = true ]; then
-            print_warning "Docker command available but cannot connect - checking socket permissions..."
-            # Try adding user to docker group if socket exists
-            if [ -S /var/run/docker.sock ]; then
-                ls -la /var/run/docker.sock
+        else
+            print_warning "Docker command available but cannot connect"
+            if [ "$docker_sibling" = true ]; then
+                print_error "Docker socket detected but permission denied"
+                print_error "Socket permissions: $(ls -la /var/run/docker.sock 2>/dev/null || ls -la /run/docker.sock 2>/dev/null || echo 'Socket not found')"
+                print_error "Make sure the container user has access to the docker socket"
+                print_error "Or run with --group-add $(stat -c '%g' /var/run/docker.sock 2>/dev/null || stat -c '%g' /run/docker.sock 2>/dev/null || echo 'docker')"
             fi
+            return 1
         fi
     else
-        print_error "Docker not found. Please ensure Docker is available."
+        print_error "Docker command not found. Cannot proceed without Docker."
         return 1
     fi
     
