@@ -367,6 +367,14 @@ EOF
 }
 
 main() {
+    # Load server environment variables before running tests
+    if [ -f "${SCRIPT_DIR}/server/.env" ]; then
+        print_status "Loading server environment variables..."
+        set -a
+        source "${SCRIPT_DIR}/server/.env"
+        set +a
+    fi
+    
     setup_test_script
     check_dependencies
     check_tmux_session
