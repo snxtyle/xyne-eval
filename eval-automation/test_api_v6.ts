@@ -574,7 +574,7 @@ async function main() {
 
   try {
     // --- File paths ---
-    const qaInputPath = join(
+    const qaInputPath = process.env.QA_INPUT_FILE || join(
       __dirname,
       "qa_output_hard.json",
     )

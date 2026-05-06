@@ -80,15 +80,12 @@ TEST_MODEL="private-large"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --concurrency)
-            # Not used in this benchmark but parse it
             shift 2
             ;;
         --domain)
-            # Not used in this benchmark but parse it
             shift 2
             ;;
         --max-steps)
-            # Not used in this benchmark but parse it
             shift 2
             ;;
         --model)
@@ -105,6 +102,34 @@ while [[ $# -gt 0 ]]; do
             ;;
         --batch-size)
             BATCH_SIZE="$2"
+            shift 2
+            ;;
+        --coding-agent)
+            CODING_AGENT="$2"
+            shift 2
+            ;;
+        --eval-timeout)
+            EVAL_TIMEOUT="$2"
+            shift 2
+            ;;
+        --log-level)
+            LOG_LEVEL="$2"
+            shift 2
+            ;;
+        --max-workers)
+            MAX_WORKERS="$2"
+            shift 2
+            ;;
+        --parallel-instances)
+            PARALLEL_INSTANCES="$2"
+            shift 2
+            ;;
+        --retry-attempts)
+            RETRY_ATTEMPTS="$2"
+            shift 2
+            ;;
+        --runner-timeout)
+            RUNNER_TIMEOUT="$2"
             shift 2
             ;;
         *)
@@ -125,6 +150,10 @@ fi
 
 export LITE_LLM_URL="https://grid.ai.juspay.net"
 export TEST_MODEL="$TEST_MODEL"
+
+if [ -f "${EVAL_AUTOMATION_DIR}/qa_output_hard.json" ]; then
+    export QA_INPUT_FILE="${EVAL_AUTOMATION_DIR}/qa_output_hard.json"
+fi
 
 print_status "Configuration:"
 echo "  Start Index: $START_INDEX"

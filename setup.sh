@@ -325,6 +325,140 @@ ensure_directories() {
     fi
 }
 
+generate_qa_data() {
+    local qa_file="$EVAL_AUTOMATION_DIR/qa_output_hard.json"
+    
+    if [ -f "$qa_file" ]; then
+        print_status "QA data file already exists: $qa_file"
+        return 0
+    fi
+    
+    print_status "Generating QA data file from test-queries.json..."
+    
+    local test_queries_file="$SCRIPT_DIR/eval-data/test-queries.json"
+    if [ ! -f "$test_queries_file" ]; then
+        print_warning "test-queries.json not found at: $test_queries_file"
+        print_warning "Cannot generate QA data automatically"
+        return 1
+    fi
+    
+    # Convert test-queries.json to qa_output_hard.json format using jq
+    if command -v jq &> /dev/null; then
+        jq 'map({
+            User_data: {
+                UserID: "eval@juspay.in",
+                User_name: "Eval Runner"
+            },
+            Question_weights: {
+                Coverage_preference: "medium",
+                Vagueness: 0.1,
+                Question_Complexity: "low",
+                Realness: "fact",
+                Reasoning: "fact-based",
+                Question_format: "definitive"
+            },
+            Question: .input,
+            Answer_weights: {
+                Factuality: 1.0,
+                Completeness: 1.0,
+                Domain_relevance: 1.0
+            },
+            Answer: ("Ground truth answer for: " + .input),
+            Confidence: 0.8,
+            citations: [],
+            question_id: ("q_" + (.input | @base64 | .[0:12]))
+        })' "$test_queries_file" > "$qa_file"
+        
+        local count=$(jq 'length' "$qa_file" 2>/dev/null || echo "0")
+        print_status "Generated QA data file with $count questions from test-queries.json"
+        print_warning "Note: Ground truth answers are auto-generated placeholders"
+        print_warning "For meaningful scoring, replace with real QA data containing correct answers"
+    else
+        print_warning "jq not available - cannot convert test-queries.json"
+        print_warning "Creating minimal QA data file..."
+        
+        # Create a minimal QA file with a few sample questions
+        cat > "$qa_file" << 'QAEOF'
+[
+  {
+    "User_data": {
+      "UserID": "eval@juspay.in",
+      "User_name": "Eval Runner"
+    },
+    "Question_weights": {
+      "Coverage_preference": "medium",
+      "Vagueness": 0.1,
+      "Question_Complexity": "low",
+      "Realness": "fact",
+      "Reasoning": "fact-based",
+      "Question_format": "definitive"
+    },
+    "Question": "What is Juspay's approach to payment orchestration?",
+    "Answer_weights": {
+      "Factuality": 1.0,
+      "Completeness": 1.0,
+      "Domain_relevance": 1.0
+    },
+    "Answer": "Juspay provides a payment orchestration platform that aggregates multiple payment gateways and methods.",
+    "Confidence": 0.8,
+    "citations": [],
+    "question_id": "q_sample_001"
+  },
+  {
+    "User_data": {
+      "UserID": "eval@juspay.in",
+      "User_name": "Eval Runner"
+    },
+    "Question_weights": {
+      "Coverage_preference": "medium",
+      "Vagueness": 0.1,
+      "Question_Complexity": "medium",
+      "Realness": "fact",
+      "Reasoning": "fact-based",
+      "Question_format": "definitive"
+    },
+    "Question": "How does UPI SDK integration work with Juspay?",
+    "Answer_weights": {
+      "Factuality": 1.0,
+      "Completeness": 1.0,
+      "Domain_relevance": 1.0
+    },
+    "Answer": "Juspay's UPI SDK enables merchants to integrate UPI payments into their applications with support for intent flow and collect requests.",
+    "Confidence": 0.7,
+    "citations": [],
+    "question_id": "q_sample_002"
+  },
+  {
+    "User_data": {
+      "UserID": "eval@juspay.in",
+      "User_name": "Eval Runner"
+    },
+    "Question_weights": {
+      "Coverage_preference": "high",
+      "Vagueness": 0.2,
+      "Question_Complexity": "high",
+      "Realness": "fact",
+      "Reasoning": "analytical",
+      "Question_format": "definitive"
+    },
+    "Question": "What are the PCI DSS compliance requirements for payment gateways?",
+    "Answer_weights": {
+      "Factuality": 1.0,
+      "Completeness": 1.0,
+      "Domain_relevance": 1.0
+    },
+    "Answer": "PCI DSS compliance for payment gateways includes requirements for network security, cardholder data protection, vulnerability management, access control, monitoring, and security policies.",
+    "Confidence": 0.75,
+    "citations": [],
+    "question_id": "q_sample_003"
+  }
+]
+QAEOF
+        print_status "Created minimal QA data file with 3 sample questions"
+        print_warning "For meaningful scoring, replace with real QA data containing correct answers"
+    fi
+}
+
 ensure_env_file() {
     print_status "Ensuring server .env file has required variables..."
     
@@ -402,6 +536,13 @@ ensure_env_file() {
         print_status "Server .env updated with required variables"
     else
         print_status "Server .env already configured"
+    fi
+
+    # Docker-compose references ../server/.env.default - create it as a copy of .env
+    local env_default_file="$SCRIPT_DIR/server/.env.default"
+    if [ ! -f "$env_default_file" ] || [ "$env_changed" = true ]; then
+        cp "$env_file" "$env_default_file"
+        print_status "Created server/.env.default for docker-compose"
     fi
 }
 
@@ -809,6 +950,7 @@ main() {
     fix_env_settings
     ensure_env_file
     ensure_directories
+    generate_qa_data
     ensure_collection
     check_services
     start_tmux_services
