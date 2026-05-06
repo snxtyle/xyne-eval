@@ -124,15 +124,9 @@ install_dependencies() {
             docker_available=true
         fi
         
-        # Install required packages
-        # Note: Even with docker_sibling (socket available), we still need docker.io CLI
         local packages="apt-utils lsof tmux curl jq unzip zip"
         if ! command -v docker &> /dev/null; then
             packages="$packages docker.io"
-        fi
-        # Only install docker-compose standalone if docker isn't available AND no socket
-        if [ "$docker_sibling" = false ] && ! command -v docker &> /dev/null; then
-            packages="$packages docker-compose"
         fi
         
         for pkg in $packages; do
@@ -198,21 +192,6 @@ install_dependencies() {
         # Re-export PATH in case bun was just installed
         export BUN_INSTALL="$HOME/.bun"
         export PATH="$BUN_INSTALL/bin:$PATH"
-    fi
-    
-    # Install docker-compose separately (it's often not included in docker.io)
-    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null 2>&1; then
-        print_status "Installing docker-compose..."
-        if [ "$readonly_fs" = false ]; then
-            $SUDO apt-get install -y -qq docker-compose 2>/dev/null || {
-                # Try alternative: install compose plugin via pip or standalone binary
-                print_warning "Failed to install docker-compose via apt, trying standalone..."
-                curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose 2>/dev/null && \
-                $SUDO chmod +x /usr/local/bin/docker-compose 2>/dev/null || {
-                    print_warning "Failed to install docker-compose standalone"
-                }
-            }
-        fi
     fi
     
     # Install vespa CLI for schema deployment
@@ -574,13 +553,6 @@ ensure_env_file() {
     else
         print_status "Server .env already configured"
     fi
-
-    # Docker-compose references ../server/.env.default - create it as a copy of .env
-    local env_default_file="$SCRIPT_DIR/server/.env.default"
-    if [ ! -f "$env_default_file" ] || [ "$env_changed" = true ]; then
-        cp "$env_file" "$env_default_file"
-        print_status "Created server/.env.default for docker-compose"
-    fi
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -598,44 +570,85 @@ source "${SCRIPT_DIR}/server/.env" 2>/dev/null || true
 set +a
 
 check_services() {
-    print_status "Checking if services are already running..."
+    print_status "Cleaning up existing services..."
     
-    if ! command -v tmux &> /dev/null; then
-        print_error "tmux is not installed"
+    if tmux has-session -t xyne 2>/dev/null; then
+        print_status "Killing existing tmux session..."
+        tmux kill-session -t xyne 2>/dev/null || true
+        sleep 2
+    fi
+}
+
+start_docker_containers() {
+    print_status "Starting Docker containers directly (siblings mode)..."
+    
+    if ! command -v docker &> /dev/null; then
+        print_error "Docker is not available. Cannot start containers."
         return 1
     fi
     
-    if tmux has-session -t xyne 2>/dev/null; then
-        print_warning "Session 'xyne' already exists"
-        read -p "Do you want to restart services? (y/n): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            tmux kill-session -t xyne 2>/dev/null || true
-            sleep 2
-        else
-            print_status "Using existing session"
-            return 0
-        fi
+    if ! docker ps &> /dev/null 2>&1; then
+        print_error "Docker daemon is not reachable"
+        return 1
+    fi
+    
+    # --- PostgreSQL ---
+    if docker ps --format '{{.Names}}' | grep -q "^xyne-db$"; then
+        print_status "PostgreSQL container already running"
+    else
+        docker rm -f xyne-db 2>/dev/null || true
+        print_status "Starting PostgreSQL (xyne-db)..."
+        docker run -d \
+            --name xyne-db \
+            -e POSTGRES_USER=xyne \
+            -e POSTGRES_PASSWORD=xyne \
+            -e POSTGRES_DB=xyne \
+            -e "POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C" \
+            -p 5432:5432 \
+            postgres:15-alpine || {
+            print_error "Failed to start PostgreSQL container"
+            print_error "Check: docker pull postgres:15-alpine"
+            return 1
+        }
+        print_status "PostgreSQL container started"
+    fi
+    
+    # --- Vespa ---
+    if docker ps --format '{{.Names}}' | grep -q "^vespa$"; then
+        print_status "Vespa container already running"
+    else
+        docker rm -f vespa 2>/dev/null || true
+        print_status "Starting Vespa..."
+        docker run -d \
+            --name vespa \
+            -p 8080:8080 \
+            -p 8081:8081 \
+            -p 19071:19071 \
+            -e "VESPA_CONFIGSERVER_JVMARGS=-Xms1g -Xmx16g -XX:+UseG1GC -XX:G1HeapRegionSize=32M" \
+            -e "VESPA_CONFIGPROXY_JVMARGS=-Xms512m -Xmx8g -XX:+UseG1GC" \
+            -e VESPA_ALLOW_WRITE_AS_USER=true \
+            vespaengine/vespa || {
+            print_error "Failed to start Vespa container"
+            print_error "Check: docker pull vespaengine/vespa"
+            return 1
+        }
+        print_status "Vespa container started"
     fi
 }
 
 start_tmux_services() {
-    print_status "Starting tmux services..."
+    print_status "Starting application services in tmux..."
     
     if ! command -v tmux &> /dev/null; then
         print_error "tmux is not installed. Cannot start services."
         return 1
     fi
     
-    # Export bun path for all future commands
     export BUN_INSTALL="$HOME/.bun"
     export PATH="$BUN_INSTALL/bin:$PATH"
     
-    # Verify bun is accessible
     if ! command -v bun &> /dev/null; then
         print_error "bun is not in PATH. Cannot start services."
-        print_error "BUN_INSTALL: $BUN_INSTALL"
-        print_error "PATH: $PATH"
         return 1
     fi
     
@@ -645,58 +658,23 @@ start_tmux_services() {
     sleep 1
     tmux set -g mouse on 2>/dev/null || true
 
-    # Ensure logs directory exists
     mkdir -p "${SCRIPT_DIR}/logs"
 
-    local VESPA_RUNNING="no"
-    local POSTGRES_RUNNING="no"
-    
-    if command -v docker &> /dev/null; then
-        VESPA_RUNNING=$(docker ps --format '{{.Names}}' | grep -q "^vespa$" && echo "yes" || echo "no")
-        POSTGRES_RUNNING=$(docker ps --format '{{.Names}}' | grep -q "^xyne-db$" && echo "yes" || echo "no")
-    fi
-
-    if [ "$VESPA_RUNNING" != "yes" ] || [ "$POSTGRES_RUNNING" != "yes" ]; then
-        if command -v docker &> /dev/null; then
-            # Detect docker compose command (v2 vs v1)
-            local compose_cmd="docker-compose"
-            if docker compose version &> /dev/null 2>&1; then
-                compose_cmd="docker compose"
-            fi
-            
-            # Create required directories for Docker volumes before starting
-            mkdir -p "$SCRIPT_DIR/server/vespa-data" "$SCRIPT_DIR/server/vespa-logs" "$SCRIPT_DIR/server/xyne-data"
-            
-            print_status "Starting Docker services using: $compose_cmd"
-            tmux new-session -d -s xyne -n "docker"
-            tmux send-keys -t xyne:docker "cd ${SCRIPT_DIR} && $compose_cmd -f deployment/docker-compose.yml up 2>&1 | tee ${SCRIPT_DIR}/logs/docker-compose.log" C-m
-            
-            # Wait for Docker containers to be ready
-            print_status "Waiting for Docker containers to initialize..."
-            wait_for_docker_containers
-        else
-            print_warning "Docker not available, skipping Docker services"
-            tmux new-session -d -s xyne -n "docker"
-            tmux send-keys -t xyne:docker 'echo Docker not available' C-m
-        fi
-    else
-        print_status "Docker services already running"
-        tmux new-session -d -s xyne -n "docker"
-        tmux send-keys -t xyne:docker 'echo Docker services already running' C-m
-    fi
+    # Window 0: server
+    tmux new-session -d -s xyne -n "server"
+    tmux send-keys -t xyne:server "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/server && set -a && source .env && set +a && bun run dev 2>&1 | tee ${SCRIPT_DIR}/logs/server.log" C-m
 
     sleep 2
 
-    tmux new-window -t xyne -n "server"
-    tmux send-keys -t xyne:server "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/server && set -a && source .env && set +a && bun run dev" C-m
-
-    tmux new-window -t xyne -n "frontend"
-    tmux send-keys -t xyne:frontend "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/frontend && npm run dev" C-m
-
+    # Window 1: sync
     tmux new-window -t xyne -n "sync"
-    tmux send-keys -t xyne:sync "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/server && set -a && source .env && set +a && bun run dev:sync" C-m
+    tmux send-keys -t xyne:sync "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/server && set -a && source .env && set +a && bun run dev:sync 2>&1 | tee ${SCRIPT_DIR}/logs/sync.log" C-m
 
-    print_status "4 tmux windows created (docker, server, frontend, sync)"
+    # Window 2: frontend (optional)
+    tmux new-window -t xyne -n "frontend"
+    tmux send-keys -t xyne:frontend "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/frontend && npm run dev 2>&1 | tee ${SCRIPT_DIR}/logs/frontend.log" C-m
+
+    print_status "3 tmux windows created (server, sync, frontend)"
 }
 
 wait_for_docker_containers() {
@@ -705,51 +683,58 @@ wait_for_docker_containers() {
     local max_attempts=60
     local attempt=0
     local db_ready=false
+    local vespa_ready=false
     
     while [ $attempt -lt $max_attempts ]; do
-        # Check for any xyne-db container
-        if docker ps --format '{{.Names}}' | grep -q "xyne-db\|xyne_postgres"; then
-            # Check if postgres is accepting connections
-            if docker exec xyne-db pg_isready -U xyne -d xyne &> /dev/null 2>&1 || \
-               docker exec xyne_postgres pg_isready -U xyne -d xyne &> /dev/null 2>&1; then
+        # Check PostgreSQL
+        if [ "$db_ready" = false ] && docker ps --format '{{.Names}}' | grep -q "^xyne-db$"; then
+            if docker exec xyne-db pg_isready -U xyne -d xyne &> /dev/null 2>&1; then
                 db_ready=true
                 print_status "PostgreSQL is ready"
             fi
         fi
         
-        if [ "$db_ready" = true ]; then
-            print_status "Database is ready, proceeding..."
+        # Check Vespa config server
+        if [ "$vespa_ready" = false ]; then
+            if curl -sf http://localhost:19071/state/v1/health > /dev/null 2>&1; then
+                vespa_ready=true
+                print_status "Vespa config server is ready"
+            fi
+        fi
+        
+        if [ "$db_ready" = true ] && [ "$vespa_ready" = true ]; then
+            print_status "All containers are healthy"
             return 0
         fi
         
         attempt=$((attempt + 1))
         if [ $((attempt % 10)) -eq 0 ]; then
             echo ""
-            print_status "Still waiting for containers... ($attempt/$max_attempts)"
+            print_status "Still waiting... ($attempt/$max_attempts) db=$db_ready vespa=$vespa_ready"
             docker ps --format "table {{.Names}}\t{{.Status}}" 2>/dev/null || true
-            
-            # Check docker-compose log for errors
-            if [ -f "${SCRIPT_DIR}/logs/docker-compose.log" ]; then
-                local last_errors=$(tail -5 "${SCRIPT_DIR}/logs/docker-compose.log" 2>/dev/null)
-                if echo "$last_errors" | grep -qi "error\|fail\|refused"; then
-                    print_warning "Docker compose log errors detected:"
-                    echo "$last_errors" | head -5
-                fi
-            fi
         fi
         echo -n "."
         sleep 2
     done
     
     echo ""
-    print_warning "Timeout waiting for containers, but continuing anyway..."
-    print_warning "Server may fail to connect to database"
+    print_warning "Timeout waiting for containers"
     
-    # Print docker-compose logs for debugging
-    if [ -f "${SCRIPT_DIR}/logs/docker-compose.log" ]; then
-        print_warning "Docker compose log (last 20 lines):"
-        tail -20 "${SCRIPT_DIR}/logs/docker-compose.log" 2>/dev/null
+    if [ "$db_ready" = false ]; then
+        print_warning "PostgreSQL not ready. Container logs:"
+        docker logs xyne-db --tail 20 2>/dev/null || print_warning "Cannot get xyne-db logs"
     fi
+    if [ "$vespa_ready" = false ]; then
+        print_warning "Vespa not ready. Container logs:"
+        docker logs vespa --tail 20 2>/dev/null || print_warning "Cannot get vespa logs"
+    fi
+    
+    if [ "$db_ready" = true ]; then
+        print_warning "Continuing with PostgreSQL only (Vespa unavailable)"
+        return 0
+    fi
+    
+    return 1
 }
 
 wait_for_services() {
@@ -1130,14 +1115,20 @@ main() {
     ensure_directories
     generate_qa_data
     check_services
-    start_tmux_services
     
-    # After Docker containers are up, run DB setup
+    # Start Docker containers directly (no docker-compose)
+    # This avoids volume path resolution issues on COS with Docker siblings
+    start_docker_containers
+    wait_for_docker_containers
+    
+    # After containers are healthy, set up the database
     run_migrations
     seed_user
     deploy_vespa_schema
     ensure_collection
     
+    # Start application services in tmux (server, sync, frontend)
+    start_tmux_services
     wait_for_services
     ingest_docs
     
@@ -1146,14 +1137,14 @@ main() {
     echo "  Setup Complete!"
     echo "=========================================="
     echo ""
-    echo "To view tmux session:"
-    echo "  tmux attach -t xyne"
+    echo "Docker containers:"
+    echo "  xyne-db  - PostgreSQL on localhost:5432"
+    echo "  vespa    - Search on localhost:8080/8081"
     echo ""
-    echo "Windows:"
-    echo "  Ctrl+b 0 - docker"
-    echo "  Ctrl+b 1 - server"
+    echo "Tmux session 'xyne':"
+    echo "  Ctrl+b 0 - server"
+    echo "  Ctrl+b 1 - sync"
     echo "  Ctrl+b 2 - frontend"
-    echo "  Ctrl+b 3 - sync"
     echo ""
     echo "Next step: Run run.sh to execute the eval pipeline"
 }
