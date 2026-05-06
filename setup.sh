@@ -126,7 +126,7 @@ install_dependencies() {
         
         # Install required packages
         # Note: Even with docker_sibling (socket available), we still need docker.io CLI
-        local packages="apt-utils lsof tmux curl jq unzip"
+        local packages="apt-utils lsof tmux curl jq unzip zip"
         if ! command -v docker &> /dev/null; then
             packages="$packages docker.io"
         fi
@@ -213,6 +213,15 @@ install_dependencies() {
                 }
             }
         fi
+    fi
+    
+    # Install vespa CLI for schema deployment
+    if ! command -v vespa &> /dev/null; then
+        print_status "Installing vespa CLI..."
+        curl -fsSL https://github.com/vespa-engine/vespa/releases/latest/download/vespa-cli_$(uname -s)_$(uname -m).tar.gz 2>/dev/null | \
+            tar xz -C /tmp/ 2>/dev/null && \
+            cp /tmp/vespa-cli/bin/vespa /usr/local/bin/vespa 2>/dev/null || \
+            print_warning "Failed to install vespa CLI - will try HTTP deploy as fallback"
     fi
     
     print_status "Dependencies installed"
@@ -532,6 +541,34 @@ ensure_env_file() {
         env_changed=true
     fi
     
+    # GOOGLE_CLIENT_ID/SECRET are required at boot (non-null asserted in server.ts)
+    # Use placeholders since we don't use OAuth in eval
+    for gvar in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET; do
+        if ! grep -q "^${gvar}=" "$env_file" 2>/dev/null || grep -q "^${gvar}=$" "$env_file" 2>/dev/null; then
+            echo "${gvar}=placeholder" >> "$env_file"
+            print_status "Set ${gvar}=placeholder in .env"
+            env_changed=true
+        fi
+    done
+    
+    # GOOGLE_REDIRECT_URI required by config.ts
+    if ! grep -q "^GOOGLE_REDIRECT_URI=" "$env_file" 2>/dev/null || grep -q "^GOOGLE_REDIRECT_URI=$" "$env_file" 2>/dev/null; then
+        echo "GOOGLE_REDIRECT_URI=http://localhost:3000/v1/auth/callback" >> "$env_file"
+        env_changed=true
+    fi
+    
+    # EMBEDDING_MODEL for Vespa deploy
+    if ! grep -q "^EMBEDDING_MODEL=" "$env_file" 2>/dev/null || grep -q "^EMBEDDING_MODEL=$" "$env_file" 2>/dev/null; then
+        echo "EMBEDDING_MODEL=bge-small-en-v1.5" >> "$env_file"
+        env_changed=true
+    fi
+    
+    # RAG_OFF_FEATURE - enable RAG for search
+    if ! grep -q "^RAG_OFF_FEATURE=" "$env_file" 2>/dev/null; then
+        echo "RAG_OFF_FEATURE=false" >> "$env_file"
+        env_changed=true
+    fi
+    
     if [ "$env_changed" = true ]; then
         print_status "Server .env updated with required variables"
     else
@@ -651,13 +688,13 @@ start_tmux_services() {
     sleep 2
 
     tmux new-window -t xyne -n "server"
-    tmux send-keys -t xyne:server "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/server && bun run dev" C-m
+    tmux send-keys -t xyne:server "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/server && set -a && source .env && set +a && bun run dev" C-m
 
     tmux new-window -t xyne -n "frontend"
     tmux send-keys -t xyne:frontend "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/frontend && npm run dev" C-m
 
     tmux new-window -t xyne -n "sync"
-    tmux send-keys -t xyne:sync "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/server && bun run dev:sync" C-m
+    tmux send-keys -t xyne:sync "export BUN_INSTALL=\"\$HOME/.bun\" && export PATH=\"\$BUN_INSTALL/bin:\$PATH\" && cd ${SCRIPT_DIR}/server && set -a && source .env && set +a && bun run dev:sync" C-m
 
     print_status "4 tmux windows created (docker, server, frontend, sync)"
 }
@@ -944,6 +981,147 @@ EOF
     fi
 }
 
+run_migrations() {
+    print_status "Running database migrations..."
+    
+    cd "${SCRIPT_DIR}/server"
+    
+    set -a
+    source "${SCRIPT_DIR}/server/.env" 2>/dev/null || true
+    set +a
+    
+    if ! bun run migrate 2>/dev/null; then
+        print_warning "bun run migrate failed, trying drizzle-kit push..."
+        if bunx drizzle-kit push 2>/dev/null; then
+            print_status "Schema pushed via drizzle-kit push"
+        else
+            print_warning "Migration failed - tables may already exist or schema has issues"
+        fi
+    else
+        print_status "Database migrations applied"
+    fi
+    
+    cd "${SCRIPT_DIR}"
+}
+
+seed_user() {
+    print_status "Seeding eval user into database..."
+    
+    local eval_email="suraj.nagre@juspay.in"
+    local eval_name="Eval User"
+    local eval_role="superAdmin"
+    local ws_external_id="ws_default"
+    
+    # Check if user already exists
+    local user_exists=$(docker exec xyne-db psql -U xyne -d xyne -t -c \
+        "SELECT COUNT(*) FROM users WHERE email = '${eval_email}';" 2>/dev/null | tr -d ' ')
+    
+    if [ "$user_exists" = "0" ] || [ -z "$user_exists" ]; then
+        # Ensure workspace exists
+        local ws_exists=$(docker exec xyne-db psql -U xyne -d xyne -t -c \
+            "SELECT COUNT(*) FROM workspaces WHERE external_id = '${ws_external_id}';" 2>/dev/null | tr -d ' ')
+        
+        if [ "$ws_exists" = "0" ] || [ -z "$ws_exists" ]; then
+            print_status "Creating workspace..."
+            docker exec xyne-db psql -U xyne -d xyne -c \
+                "INSERT INTO workspaces (name, domain, external_id) VALUES ('Eval', 'juspay.in', '${ws_external_id}');" 2>/dev/null || \
+                print_warning "Failed to create workspace"
+        fi
+        
+        # Get workspace ID
+        local ws_id=$(docker exec xyne-db psql -U xyne -d xyne -t -c \
+            "SELECT id FROM workspaces WHERE external_id = '${ws_external_id}' LIMIT 1;" 2>/dev/null | tr -d ' ')
+        
+        if [ -n "$ws_id" ]; then
+            print_status "Creating eval user: ${eval_email}"
+            docker exec xyne-db psql -U xyne -d xyne -c \
+                "INSERT INTO users (workspace_id, email, name, external_id, role) VALUES (${ws_id}, '${eval_email}', '${eval_name}', '${ws_external_id}', '${eval_role}');" 2>/dev/null || \
+                print_warning "Failed to create user"
+        else
+            print_warning "Could not find workspace ID, skipping user creation"
+        fi
+    else
+        print_status "Eval user already exists: ${eval_email}"
+    fi
+}
+
+deploy_vespa_schema() {
+    print_status "Deploying Vespa schema..."
+    
+    # Check if Vespa config server is reachable
+    if ! curl -sf http://localhost:19071/state/v1/health > /dev/null 2>&1; then
+        print_warning "Vespa config server not reachable on port 19071"
+        print_warning "Skipping Vespa schema deployment"
+        return 0
+    fi
+    
+    # Try using deploy.sh if vespa CLI is available
+    if command -v vespa &> /dev/null; then
+        print_status "Using vespa CLI to deploy..."
+        cd "${SCRIPT_DIR}/server/vespa"
+        EMBEDDING_MODEL="${EMBEDDING_MODEL:-bge-small-en-v1.5}" ./deploy.sh 2>&1 || \
+            print_warning "Vespa deploy.sh failed"
+        cd "${SCRIPT_DIR}"
+    else
+        print_warning "vespa CLI not installed - attempting manual deploy via HTTP API"
+        
+        # Replace DIMS placeholders in schema files
+        local dims=384
+        if [ "${EMBEDDING_MODEL}" = "bge-base-en-v1.5" ]; then dims=768
+        elif [ "${EMBEDDING_MODEL}" = "bge-large-en-v1.5" ]; then dims=1024
+        fi
+        
+        cd "${SCRIPT_DIR}/server/vespa"
+        
+        # Replace DIMS in schema files if bun is available
+        if command -v bun &> /dev/null; then
+            bun run replaceDIMS.ts "$dims" 2>/dev/null || \
+                print_warning "replaceDIMS.ts failed, schemas may have placeholder dimensions"
+        fi
+        
+        # Download embedding model if not present
+        mkdir -p models
+        if [ ! -f models/tokenizer.json ]; then
+            print_status "Downloading embedding model tokenizer..."
+            curl -sL "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/tokenizer.json" \
+                -o models/tokenizer.json 2>/dev/null || print_warning "Failed to download tokenizer"
+        fi
+        if [ ! -f models/model.onnx ]; then
+            print_status "Downloading embedding model..."
+            curl -sL "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main/onnx/model.onnx" \
+                -o models/model.onnx 2>/dev/null || print_warning "Failed to download model"
+        fi
+        
+        # Create application package zip and deploy via HTTP API
+        if command -v zip &> /dev/null; then
+            print_status "Creating Vespa application package..."
+            zip -r /tmp/vespa-app.zip services.xml validation-overrides.xml schemas/ models/ rules/ 2>/dev/null || \
+                zip -r /tmp/vespa-app.zip services.xml validation-overrides.xml schemas/ rules/ 2>/dev/null || \
+                print_warning "Failed to create application zip"
+            
+            if [ -f /tmp/vespa-app.zip ]; then
+                print_status "Deploying application package to Vespa..."
+                local deploy_response=$(curl -s -w "\n%{http_code}" -X POST \
+                    "http://localhost:19071/application/v2/tenant/default/prepareandactivate" \
+                    -H "Content-Type: application/zip" \
+                    --data-binary @/tmp/vespa-app.zip 2>/dev/null)
+                local deploy_status=$(echo "$deploy_response" | tail -1)
+                if [ "$deploy_status" = "200" ] || [ "$deploy_status" = "202" ]; then
+                    print_status "Vespa application deployed successfully"
+                else
+                    print_warning "Vespa deploy HTTP status: ${deploy_status}"
+                fi
+                rm -f /tmp/vespa-app.zip
+            fi
+        else
+            print_warning "zip not available - cannot create Vespa application package"
+            print_warning "Install zip or vespa CLI for schema deployment"
+        fi
+        
+        cd "${SCRIPT_DIR}"
+    fi
+}
+
 main() {
     install_dependencies
     kill_existing_processes
@@ -951,9 +1129,15 @@ main() {
     ensure_env_file
     ensure_directories
     generate_qa_data
-    ensure_collection
     check_services
     start_tmux_services
+    
+    # After Docker containers are up, run DB setup
+    run_migrations
+    seed_user
+    deploy_vespa_schema
+    ensure_collection
+    
     wait_for_services
     ingest_docs
     
